@@ -1,0 +1,55 @@
+{
+  "name": "cod-drop-products-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for COD Network marketplace (COD Drop) — fetches all products, stores daily snapshots, compares quantities to find best sellers.",
+  "type": "module",
+  "bin": {
+    "cod-drop-products-mcp": "dist/server.js",
+    "cod-drop-products-mcp-http": "dist/http.js"
+  },
+  "main": "dist/server.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/server.js dist/http.js",
+    "start": "node dist/server.js",
+    "start:http": "node dist/http.js",
+    "dev": "tsx src/server.ts",
+    "dev:http": "tsx src/http.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cod-network",
+    "cod-drop",
+    "marketplace",
+    "ecommerce"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "better-sqlite3": "^11.7.0",
+    "express": "^4.21.2",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.24.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

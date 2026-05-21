@@ -1,0 +1,31 @@
+# Fly.io app config for cod-drop-products-mcp HTTP server.
+# Deploy with: `flyctl launch --no-deploy` (first time)
+# then: `flyctl secrets set COD_NETWORK_API_TOKEN=your-token MCP_AUTH_TOKEN=$(openssl rand -base64 32)`
+# then: `flyctl deploy`.
+
+app = "cod-drop-products-mcp"
+primary_region = "cdg"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 50
+
+[mounts]
+  source = "cod_drop_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
