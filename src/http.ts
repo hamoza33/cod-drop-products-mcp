@@ -43,9 +43,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const flyAppName = process.env.FLY_APP_NAME;
   const issuerUrl = process.env.MCP_PUBLIC_URL
     ? new URL(process.env.MCP_PUBLIC_URL)
-    : new URL(`http://${host}:${port}`);
+    : flyAppName
+      ? new URL(`https://${flyAppName}.fly.dev`)
+      : new URL(`http://${host}:${port}`);
   const mcpResourceUrl = new URL("/mcp", issuerUrl);
 
   const oauth = new CodMcpOAuthProvider(adminToken);
