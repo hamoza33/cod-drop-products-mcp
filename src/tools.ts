@@ -296,12 +296,22 @@ const fetchProducts = tool({
       .describe("Max API pages to scan (10 items/page). Default scans all."),
   }),
   handler: async (input, client) => {
-    const { items, totalPages, pagesScanned } = await paginateAll<MarketplaceProduct>(
-      client,
-      "/seller/marketplace/products",
-      {},
-      input.max_pages ?? MAX_PAGES,
-    );
+    const [marketplaceResult, dropResult] = await Promise.all([
+      paginateAll<MarketplaceProduct>(
+        client,
+        "/seller/marketplace/products",
+        {},
+        input.max_pages ?? MAX_PAGES,
+      ),
+      paginateAll<DropProduct>(client, "/seller/drop-products"),
+    ]);
+
+    const { items, totalPages, pagesScanned } = marketplaceResult;
+
+    const dropByName = new Map<string, DropProduct>();
+    for (const dp of dropResult.items) {
+      dropByName.set(dp.name.toLowerCase(), dp);
+    }
 
     const filtered = applyFilters(items, {
       country: input.country,
@@ -326,22 +336,32 @@ const fetchProducts = tool({
       limit,
       pages_scanned: pagesScanned,
       total_api_pages: totalPages,
-      products: page.map((p) => ({
-        id: p.id,
-        name: p.name,
-        sku: p.sku || null,
-        country: p.country,
-        country_name: p.country_name,
-        cost: p.price,
-        currency: p.currency,
-        recommended_selling_price: p.recommended_selling_price,
-        category: p.type.label,
-        in_stock: p.inStock,
-        available_for_drop: p.available_for_drop,
-        is_pinned: p.is_pinned,
-        is_dropped: p.is_dropped,
-        image_url: p.image_url,
-      })),
+      drop_products_scanned: dropResult.items.length,
+      products: page.map((p) => {
+        const dropMatch = dropByName.get(p.name.toLowerCase());
+        return {
+          id: p.id,
+          name: p.name,
+          sku: p.sku || null,
+          country: p.country,
+          country_name: p.country_name,
+          cost: p.price,
+          currency: p.currency,
+          recommended_selling_price: p.recommended_selling_price,
+          category: p.type.label,
+          in_stock: p.inStock,
+          available_for_drop: p.available_for_drop,
+          is_pinned: p.is_pinned,
+          is_dropped: p.is_dropped,
+          image_url: p.image_url,
+          quantity: dropMatch?.quantity ?? null,
+          warehouse: dropMatch?.project_name ?? null,
+          product_cost: dropMatch?.product_cost ?? null,
+          is_low_quantity: dropMatch?.is_low_quantity ?? null,
+          is_enabled: dropMatch?.is_enabled ?? null,
+          notes: dropMatch?.notes ?? null,
+        };
+      }),
     };
   },
 });
