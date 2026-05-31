@@ -76,6 +76,19 @@ interface MarketplaceProduct {
   available_for_drop: boolean;
   is_favorite: boolean;
   is_dropped: boolean;
+  stocks?: {
+    data: Array<{
+      id: number;
+      quantity: number;
+      product_sku: string;
+      project: {
+        data: {
+          id: number;
+          name: string;
+        };
+      };
+    }>;
+  };
 }
 
 interface DropProduct {
@@ -300,7 +313,7 @@ const fetchProducts = tool({
       paginateAll<MarketplaceProduct>(
         client,
         "/seller/marketplace/products",
-        {},
+        { include: "stocks.project" },
         input.max_pages ?? MAX_PAGES,
       ),
       paginateAll<DropProduct>(client, "/seller/drop-products"),
@@ -355,8 +368,8 @@ const fetchProducts = tool({
           is_pinned: p.is_pinned,
           is_dropped: p.is_dropped,
           image_url: p.image_url,
-          quantity: dropMatch?.quantity ?? null,
-          project_name: dropMatch?.project_name ?? null,
+          quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
+          project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
         };
       }),
     };
@@ -376,6 +389,7 @@ const getProduct = tool({
   handler: async (input, client) => {
     const resp = await client.request<{ data: MarketplaceProduct }>({
       path: `/seller/marketplace/products/${input.id}`,
+      query: { include: "stocks.project" },
     });
     const p = resp.data;
     return {
@@ -398,6 +412,8 @@ const getProduct = tool({
       is_favorite: p.is_favorite,
       image_url: p.image_url,
       source_url: p.url,
+      quantity: p.stocks?.data?.[0]?.quantity ?? null,
+      project_name: p.stocks?.data?.[0]?.project?.data?.name ?? null,
     };
   },
 });
@@ -444,6 +460,7 @@ const getProductImages = tool({
     const { items } = await paginateAll<MarketplaceProduct>(
       client,
       "/seller/marketplace/products",
+      { include: "stocks.project" },
     );
 
     let filtered = items;
@@ -490,7 +507,7 @@ const snapshotToday = tool({
     const date = input.date ?? todayUTC();
 
     const [marketplaceResult, dropResult] = await Promise.all([
-      paginateAll<MarketplaceProduct>(client, "/seller/marketplace/products"),
+      paginateAll<MarketplaceProduct>(client, "/seller/marketplace/products", { include: "stocks.project" }),
       paginateAll<DropProduct>(client, "/seller/drop-products"),
     ]);
 
@@ -518,8 +535,8 @@ const snapshotToday = tool({
         in_stock: p.inStock,
         available_for_drop: p.available_for_drop,
         image_url: p.image_url,
-        quantity: dropMatch?.quantity ?? null,
-        project_name: dropMatch?.project_name ?? null,
+        quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
+        project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
         snapshot_date: date,
       };
     });
