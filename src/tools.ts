@@ -296,12 +296,24 @@ const fetchProducts = tool({
       .describe("Max API pages to scan (10 items/page). Default scans all."),
   }),
   handler: async (input, client) => {
-    const { items, totalPages, pagesScanned } = await paginateAll<MarketplaceProduct>(
-      client,
-      "/seller/marketplace/products",
-      {},
-      input.max_pages ?? MAX_PAGES,
-    );
+    const [{ items, totalPages, pagesScanned }, dropResult] = await Promise.all([
+      paginateAll<MarketplaceProduct>(
+        client,
+        "/seller/marketplace/products",
+        {},
+        input.max_pages ?? MAX_PAGES,
+      ),
+      paginateAll<DropProduct>(client, "/seller/drop-products"),
+    ]);
+
+    const dropBySku = new Map<string, DropProduct>();
+    const dropByName = new Map<string, DropProduct>();
+    for (const dp of dropResult.items) {
+      if (dp.sku) {
+        dropBySku.set(dp.sku, dp);
+      }
+      dropByName.set(dp.name.toLowerCase(), dp);
+    }
 
     const filtered = applyFilters(items, {
       country: input.country,
@@ -326,22 +338,27 @@ const fetchProducts = tool({
       limit,
       pages_scanned: pagesScanned,
       total_api_pages: totalPages,
-      products: page.map((p) => ({
-        id: p.id,
-        name: p.name,
-        sku: p.sku || null,
-        country: p.country,
-        country_name: p.country_name,
-        cost: p.price,
-        currency: p.currency,
-        recommended_selling_price: p.recommended_selling_price,
-        category: p.type.label,
-        in_stock: p.inStock,
-        available_for_drop: p.available_for_drop,
-        is_pinned: p.is_pinned,
-        is_dropped: p.is_dropped,
-        image_url: p.image_url,
-      })),
+      products: page.map((p) => {
+        const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
+        return {
+          id: p.id,
+          name: p.name,
+          sku: p.sku || null,
+          country: p.country,
+          country_name: p.country_name,
+          cost: p.price,
+          currency: p.currency,
+          recommended_selling_price: p.recommended_selling_price,
+          category: p.type.label,
+          in_stock: p.inStock,
+          available_for_drop: p.available_for_drop,
+          is_pinned: p.is_pinned,
+          is_dropped: p.is_dropped,
+          image_url: p.image_url,
+          quantity: dropMatch?.quantity ?? null,
+          project_name: dropMatch?.project_name ?? null,
+        };
+      }),
     };
   },
 });
@@ -477,13 +494,17 @@ const snapshotToday = tool({
       paginateAll<DropProduct>(client, "/seller/drop-products"),
     ]);
 
+    const dropBySku = new Map<string, DropProduct>();
     const dropByName = new Map<string, DropProduct>();
     for (const dp of dropResult.items) {
+      if (dp.sku) {
+        dropBySku.set(dp.sku, dp);
+      }
       dropByName.set(dp.name.toLowerCase(), dp);
     }
 
     const snapshots: ProductSnapshot[] = marketplaceResult.items.map((p) => {
-      const dropMatch = dropByName.get(p.name.toLowerCase());
+      const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
       return {
         product_id: p.id,
         name: p.name,
