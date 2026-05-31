@@ -76,6 +76,19 @@ interface MarketplaceProduct {
   available_for_drop: boolean;
   is_favorite: boolean;
   is_dropped: boolean;
+  stocks?: {
+    data: Array<{
+      id: number;
+      quantity: number;
+      product_sku: string;
+      project: {
+        data: {
+          id: number;
+          name: string;
+        };
+      };
+    }>;
+  };
 }
 
 interface DropProduct {
@@ -296,20 +309,22 @@ const fetchProducts = tool({
       .describe("Max API pages to scan (10 items/page). Default scans all."),
   }),
   handler: async (input, client) => {
-    const [marketplaceResult, dropResult] = await Promise.all([
+    const [{ items, totalPages, pagesScanned }, dropResult] = await Promise.all([
       paginateAll<MarketplaceProduct>(
         client,
         "/seller/marketplace/products",
-        {},
+        { include: "stocks.project" },
         input.max_pages ?? MAX_PAGES,
       ),
       paginateAll<DropProduct>(client, "/seller/drop-products"),
     ]);
 
-    const { items, totalPages, pagesScanned } = marketplaceResult;
-
+    const dropBySku = new Map<string, DropProduct>();
     const dropByName = new Map<string, DropProduct>();
     for (const dp of dropResult.items) {
+      if (dp.sku) {
+        dropBySku.set(dp.sku, dp);
+      }
       dropByName.set(dp.name.toLowerCase(), dp);
     }
 
@@ -336,9 +351,8 @@ const fetchProducts = tool({
       limit,
       pages_scanned: pagesScanned,
       total_api_pages: totalPages,
-      drop_products_scanned: dropResult.items.length,
       products: page.map((p) => {
-        const dropMatch = dropByName.get(p.name.toLowerCase());
+        const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
         return {
           id: p.id,
           name: p.name,
@@ -354,12 +368,8 @@ const fetchProducts = tool({
           is_pinned: p.is_pinned,
           is_dropped: p.is_dropped,
           image_url: p.image_url,
-          quantity: dropMatch?.quantity ?? null,
-          warehouse: dropMatch?.project_name ?? null,
-          product_cost: dropMatch?.product_cost ?? null,
-          is_low_quantity: dropMatch?.is_low_quantity ?? null,
-          is_enabled: dropMatch?.is_enabled ?? null,
-          notes: dropMatch?.notes ?? null,
+          quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
+          project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
         };
       }),
     };
@@ -379,6 +389,7 @@ const getProduct = tool({
   handler: async (input, client) => {
     const resp = await client.request<{ data: MarketplaceProduct }>({
       path: `/seller/marketplace/products/${input.id}`,
+      query: { include: "stocks.project" },
     });
     const p = resp.data;
     return {
@@ -401,6 +412,8 @@ const getProduct = tool({
       is_favorite: p.is_favorite,
       image_url: p.image_url,
       source_url: p.url,
+      quantity: p.stocks?.data?.[0]?.quantity ?? null,
+      project_name: p.stocks?.data?.[0]?.project?.data?.name ?? null,
     };
   },
 });
@@ -447,6 +460,7 @@ const getProductImages = tool({
     const { items } = await paginateAll<MarketplaceProduct>(
       client,
       "/seller/marketplace/products",
+      { include: "stocks.project" },
     );
 
     let filtered = items;
@@ -493,17 +507,21 @@ const snapshotToday = tool({
     const date = input.date ?? todayUTC();
 
     const [marketplaceResult, dropResult] = await Promise.all([
-      paginateAll<MarketplaceProduct>(client, "/seller/marketplace/products"),
+      paginateAll<MarketplaceProduct>(client, "/seller/marketplace/products", { include: "stocks.project" }),
       paginateAll<DropProduct>(client, "/seller/drop-products"),
     ]);
 
+    const dropBySku = new Map<string, DropProduct>();
     const dropByName = new Map<string, DropProduct>();
     for (const dp of dropResult.items) {
+      if (dp.sku) {
+        dropBySku.set(dp.sku, dp);
+      }
       dropByName.set(dp.name.toLowerCase(), dp);
     }
 
     const snapshots: ProductSnapshot[] = marketplaceResult.items.map((p) => {
-      const dropMatch = dropByName.get(p.name.toLowerCase());
+      const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
       return {
         product_id: p.id,
         name: p.name,
@@ -517,8 +535,8 @@ const snapshotToday = tool({
         in_stock: p.inStock,
         available_for_drop: p.available_for_drop,
         image_url: p.image_url,
-        quantity: dropMatch?.quantity ?? null,
-        project_name: dropMatch?.project_name ?? null,
+        quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
+        project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
         snapshot_date: date,
       };
     });
