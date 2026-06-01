@@ -54,7 +54,9 @@ async function main(): Promise<void> {
   const oauth = new CodMcpOAuthProvider(adminToken);
 
   const app = express();
-  app.set("trust proxy", true);
+  // Use 1 (single proxy hop) instead of `true` to satisfy express-rate-limit
+  // validation which rejects the permissive `true` setting.
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "4mb" }));
   app.use(express.urlencoded({ extended: false, limit: "256kb" }));
 
