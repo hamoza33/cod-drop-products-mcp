@@ -18,6 +18,7 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 const TOKEN_TTL_S = 3600;
 
@@ -151,7 +152,7 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
     authorizationCode: string,
   ): Promise<string> {
     const pending = this.codes.get(authorizationCode);
-    if (!pending) throw new Error("Unknown authorization code.");
+    if (!pending) throw new InvalidGrantError("Unknown or expired authorization code.");
     return pending.codeChallenge;
   }
 
@@ -160,7 +161,7 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
     authorizationCode: string,
   ): Promise<OAuthTokens> {
     const pending = this.codes.get(authorizationCode);
-    if (!pending) throw new Error("Unknown authorization code.");
+    if (!pending) throw new InvalidGrantError("Unknown or expired authorization code.");
     this.codes.delete(authorizationCode);
 
     const accessToken = crypto.randomBytes(32).toString("hex");
@@ -192,7 +193,7 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
     _scopes?: string[],
   ): Promise<OAuthTokens> {
     const saved = this.refreshTokens.get(refreshToken);
-    if (!saved) throw new Error("Invalid refresh token.");
+    if (!saved) throw new InvalidGrantError("Invalid or expired refresh token.");
     this.refreshTokens.delete(refreshToken);
 
     const accessToken = crypto.randomBytes(32).toString("hex");
@@ -220,10 +221,10 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const saved = this.tokens.get(token);
-    if (!saved) throw new Error("Invalid access token.");
+    if (!saved) throw new InvalidGrantError("Invalid or expired access token.");
     if (saved.expiresAt < Math.floor(Date.now() / 1000)) {
       this.tokens.delete(token);
-      throw new Error("Access token expired.");
+      throw new InvalidGrantError("Access token expired.");
     }
     return {
       token,
