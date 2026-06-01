@@ -54,7 +54,9 @@ async function main(): Promise<void> {
   const oauth = new CodMcpOAuthProvider(adminToken);
 
   const app = express();
-  app.set("trust proxy", true);
+  // Use 1 (single proxy hop) instead of `true` to satisfy express-rate-limit
+  // validation which rejects the permissive `true` setting.
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "4mb" }));
   app.use(express.urlencoded({ extended: false, limit: "256kb" }));
 
@@ -74,6 +76,17 @@ async function main(): Promise<void> {
       protectedResourceMetadata: getOAuthProtectedResourceMetadataUrl(mcpResourceUrl),
       docs: "https://github.com/hamoza33/cod-drop-products-mcp",
     });
+  });
+
+  // Auto-register unknown clients before the SDK's auth router validates them.
+  // This handles clients whose registrations were lost on machine restart.
+  app.use(["/authorize", "/token"], (req, _res, next) => {
+    const clientId = (req.query.client_id ?? req.body?.client_id) as string | undefined;
+    const redirectUri = (req.query.redirect_uri ?? req.body?.redirect_uri) as string | undefined;
+    if (clientId) {
+      oauth.ensureClient(clientId, redirectUri ?? "");
+    }
+    next();
   });
 
   app.use(
