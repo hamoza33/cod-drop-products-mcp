@@ -76,6 +76,17 @@ async function main(): Promise<void> {
     });
   });
 
+  // Auto-register unknown clients before the SDK's auth router validates them.
+  // This handles clients whose registrations were lost on machine restart.
+  app.use(["/authorize", "/token"], (req, _res, next) => {
+    const clientId = (req.query.client_id ?? req.body?.client_id) as string | undefined;
+    const redirectUri = (req.query.redirect_uri ?? req.body?.redirect_uri) as string | undefined;
+    if (clientId) {
+      oauth.ensureClient(clientId, redirectUri ?? "");
+    }
+    next();
+  });
+
   app.use(
     mcpAuthRouter({
       provider: oauth,

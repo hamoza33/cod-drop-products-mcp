@@ -45,19 +45,7 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
     this.adminToken = adminToken;
     this.clientsStore = {
       getClient: (clientId: string) => {
-        const existing = this.clients.get(clientId);
-        if (existing) return existing;
-        // Accept any client_id (e.g. from a previous registration lost on restart).
-        // Real authentication is the admin token in the approval form.
-        return {
-          client_id: clientId,
-          client_name: "MCP Client",
-          redirect_uris: [],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          scope: "mcp:tools",
-          token_endpoint_auth_method: "none",
-        } as unknown as OAuthClientInformationFull;
+        return this.clients.get(clientId) ?? undefined;
       },
       registerClient: (client: OAuthClientInformationFull) => {
         this.clients.set(client.client_id, client);
@@ -68,6 +56,34 @@ export class CodMcpOAuthProvider implements OAuthServerProvider {
 
   isAdminToken(token: string): boolean {
     return token === this.adminToken;
+  }
+
+  /**
+   * Ensures a client_id is registered with the given redirect_uri.
+   * Called before the SDK's authorize handler to handle clients whose
+   * registrations were lost on machine restart.
+   */
+  ensureClient(clientId: string, redirectUri: string): void {
+    const existing = this.clients.get(clientId);
+    if (existing) {
+      // Add redirect_uri if not already registered
+      if (
+        redirectUri &&
+        !(existing.redirect_uris as string[]).includes(redirectUri)
+      ) {
+        (existing.redirect_uris as string[]).push(redirectUri);
+      }
+      return;
+    }
+    this.clients.set(clientId, {
+      client_id: clientId,
+      client_name: "MCP Client",
+      redirect_uris: redirectUri ? [redirectUri] : [],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      scope: "mcp:tools",
+      token_endpoint_auth_method: "none",
+    } as unknown as OAuthClientInformationFull);
   }
 
   async authorize(
