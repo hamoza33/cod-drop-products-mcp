@@ -3,7 +3,7 @@
 # then: `flyctl secrets set COD_NETWORK_API_TOKEN=your-token MCP_AUTH_TOKEN=$(openssl rand -base64 32)`
 # then: `flyctl deploy`.
 
-app = "cod-drop-products-mcp"
+app = "cod-drop-products-mcp-fly"
 primary_region = "cdg"
 
 [build]
