@@ -192,6 +192,66 @@ function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Map common country abbreviations/names to ISO 2-letter codes. */
+const COUNTRY_ALIASES: Record<string, string> = {
+  ksa: "sa",
+  "saudi arabia": "sa",
+  "saudi": "sa",
+  uae: "ae",
+  "united arab emirates": "ae",
+  emirates: "ae",
+  kuwait: "kw",
+  bahrain: "bh",
+  qatar: "qa",
+  oman: "om",
+  jordan: "jo",
+  egypt: "eg",
+  iraq: "iq",
+  morocco: "ma",
+  tunisia: "tn",
+  algeria: "dz",
+  libya: "ly",
+  lebanon: "lb",
+  palestine: "ps",
+  yemen: "ye",
+  sudan: "sd",
+  syria: "sy",
+};
+
+/**
+ * Resolve a user-provided country string to its ISO 2-letter code.
+ * Returns the lowercase input if no alias is found.
+ */
+function resolveCountryCode(input: string): string {
+  const lower = input.toLowerCase().trim();
+  return COUNTRY_ALIASES[lower] ?? lower;
+}
+
+/**
+ * Check if a product matches the given country filter.
+ * Tries ISO code match, full name match, and partial name match.
+ */
+function matchesCountry(
+  productCountry: string,
+  productCountryName: string,
+  filterValue: string,
+): boolean {
+  const resolved = resolveCountryCode(filterValue);
+  const pCode = productCountry.toLowerCase().trim();
+  const pName = productCountryName.toLowerCase().trim();
+
+  // Exact ISO code match
+  if (pCode === resolved) return true;
+  // Exact country name match
+  if (pName === resolved) return true;
+  // Original filter value matches name (for partial)
+  const lower = filterValue.toLowerCase().trim();
+  if (pName === lower) return true;
+  if (pName.includes(lower) || lower.includes(pName)) return true;
+
+  return false;
+}
+
 type SortField = "price_asc" | "price_desc" | "name_asc" | "name_desc";
 
 function applyFilters(
@@ -210,11 +270,8 @@ function applyFilters(
   let result = [...products];
 
   if (filters.country) {
-    const c = filters.country.toLowerCase();
-    result = result.filter(
-      (p) =>
-        p.country.toLowerCase() === c ||
-        p.country_name.toLowerCase() === c,
+    result = result.filter((p) =>
+      matchesCountry(p.country, p.country_name, filters.country!),
     );
   }
   if (filters.category) {
@@ -309,14 +366,23 @@ const fetchProducts = tool({
       .describe("Max API pages to scan (10 items/page). Default scans all."),
   }),
   handler: async (input, client) => {
+    // Pass country as server-side filter if provided (reduces pages to scan)
+    const marketplaceQuery: Record<string, string | number | boolean> = { include: "stocks.project" };
+    const dropQuery: Record<string, string | number | boolean> = {};
+    if (input.country) {
+      const code = resolveCountryCode(input.country);
+      marketplaceQuery.country = code;
+      dropQuery.country = code;
+    }
+
     const [{ items, totalPages, pagesScanned }, dropResult] = await Promise.all([
       paginateAll<MarketplaceProduct>(
         client,
         "/seller/marketplace/products",
-        { include: "stocks.project" },
+        marketplaceQuery,
         input.max_pages ?? MAX_PAGES,
       ),
-      paginateAll<DropProduct>(client, "/seller/drop-products"),
+      paginateAll<DropProduct>(client, "/seller/drop-products", dropQuery),
     ]);
 
     const dropBySku = new Map<string, DropProduct>();
@@ -617,11 +683,8 @@ const bestSellers = tool({
     let results = compareDays(todayDate, yesterdayDate);
 
     if (input.country) {
-      const c = input.country.toLowerCase();
-      results = results.filter(
-        (r) =>
-          r.country.toLowerCase() === c ||
-          r.country_name.toLowerCase() === c,
+      results = results.filter((r) =>
+        matchesCountry(r.country, r.country_name, input.country!),
       );
     }
     if (input.category) {
@@ -704,11 +767,8 @@ const snapshotData = tool({
     let snaps = getSnapshotsForDate(input.date);
 
     if (input.country) {
-      const c = input.country.toLowerCase();
-      snaps = snaps.filter(
-        (s) =>
-          s.country.toLowerCase() === c ||
-          s.country_name.toLowerCase() === c,
+      snaps = snaps.filter((s) =>
+        matchesCountry(s.country, s.country_name, input.country!),
       );
     }
     if (input.category) {
