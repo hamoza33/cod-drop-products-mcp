@@ -4,7 +4,7 @@
  * server (systemd keeps it alive), so no external crontab is required.
  *
  * Env:
- *   SNAPSHOT_CRON_UTC       "HH:MM" UTC time to run daily (default "01:00")
+ *   SNAPSHOT_CRON_UTC       "HH:MM" UTC time to run daily (default "00:01")
  *   SNAPSHOT_CRON_DISABLED  set to "1" to disable the scheduler
  *   SNAPSHOT_CRON_ATTEMPTS  retry attempts on failure (default 3)
  */
@@ -81,7 +81,7 @@ export function startDailySnapshotScheduler(log: Logger): void {
     return;
   }
 
-  const { h, m } = parseUtcHHMM(process.env.SNAPSHOT_CRON_UTC ?? "01:00");
+  const { h, m } = parseUtcHHMM(process.env.SNAPSHOT_CRON_UTC ?? "00:01");
   const attempts = (() => {
     const n = Number.parseInt(process.env.SNAPSHOT_CRON_ATTEMPTS ?? "3", 10);
     return Number.isFinite(n) && n > 0 ? n : 3;

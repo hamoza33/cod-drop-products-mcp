@@ -58,7 +58,7 @@ For each product, comparing today vs. the previous snapshot:
 The HTTP server runs an in-process scheduler that calls `cod_drop_snapshot_today`
 automatically once per day at a fixed UTC time (with retry + logging), then
 writes the files above. No external crontab is needed — `systemd`/Fly keeps the
-process alive. Configure via `SNAPSHOT_CRON_UTC` (default `01:00`),
+process alive. Configure via `SNAPSHOT_CRON_UTC` (default `00:01`),
 `SNAPSHOT_CRON_ATTEMPTS` (default `3`), or disable with `SNAPSHOT_CRON_DISABLED=1`.
 
 ## Authentication
@@ -108,7 +108,7 @@ fly deploy
 | `PORT` | No | HTTP port (default: 8080) |
 | `MCP_PUBLIC_URL` | No | Public URL for OAuth discovery |
 | `SNAPSHOTS_DIR` | No | Directory for public snapshot files (default: `{DATA_DIR}/snapshots`) |
-| `SNAPSHOT_CRON_UTC` | No | Daily snapshot time, `HH:MM` UTC (default: `01:00`) |
+| `SNAPSHOT_CRON_UTC` | No | Daily snapshot time, `HH:MM` UTC (default: `00:01`) |
 | `SNAPSHOT_CRON_ATTEMPTS` | No | Retry attempts on failure (default: `3`) |
 | `SNAPSHOT_CRON_DISABLED` | No | Set to `1` to disable the daily scheduler |
 
