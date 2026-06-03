@@ -14,14 +14,20 @@
 import { z } from "zod";
 import type { CodClient } from "./client.js";
 import {
-  upsertSnapshots,
   compareDays,
   getSnapshotDates,
   getSnapshotsForDate,
   getSnapshotCount,
   getLatestTwoDates,
-  type ProductSnapshot,
 } from "./db.js";
+import {
+  paginateAll,
+  MAX_PAGES,
+  type MarketplaceProduct,
+  type DropProduct,
+} from "./marketplace.js";
+import { runSnapshot } from "./snapshot.js";
+import { productLink } from "./snapshot-files.js";
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                     */
@@ -51,146 +57,8 @@ function tool<S extends z.ZodTypeAny>(def: TypedToolDef<S>): ToolDef {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  API response types                                                        */
-/* -------------------------------------------------------------------------- */
-
-interface MarketplaceProduct {
-  id: number;
-  name: string;
-  sku: string;
-  slug: string;
-  description: string;
-  image_url: string;
-  path_image: string;
-  price: string;
-  url: string;
-  currency: string;
-  backup_price_currency: string;
-  type: { label: string; code: number };
-  is_pinned: boolean;
-  country: string;
-  country_name: string;
-  inStock: boolean;
-  recommended_selling_price: string;
-  available_for_sourcing: boolean;
-  available_for_drop: boolean;
-  is_favorite: boolean;
-  is_dropped: boolean;
-  stocks?: {
-    data: Array<{
-      id: number;
-      quantity: number;
-      product_sku: string;
-      project: {
-        data: {
-          id: number;
-          name: string;
-        };
-      };
-    }>;
-  };
-}
-
-interface DropProduct {
-  id: number;
-  name: string;
-  sku: string;
-  product_cost: string;
-  notes: string | null;
-  currency: string;
-  backup_price_currency: string;
-  image: string;
-  up_sell_and_backup_prices: Array<{
-    quantity: string;
-    price: string;
-    backup_price: string | null;
-    currency: string | null;
-  }>;
-  is_low_quantity: boolean;
-  is_enabled: boolean;
-  created_at: string;
-  project_name: string;
-  quantity: number;
-  country_name: string;
-  country_iso_code: string;
-  marketplace_status: { label: string; code: number };
-}
-
-interface ListResponse<T> {
-  data: T[];
-  meta?: {
-    pagination?: {
-      total?: number;
-      count?: number;
-      per_page?: number;
-      current_page?: number;
-      total_pages?: number;
-    };
-  };
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Pagination engine                                                         */
-/* -------------------------------------------------------------------------- */
-
-const PAGE_CONCURRENCY = 5;
-const MAX_PAGES = 300;
-
-async function paginateAll<T>(
-  client: CodClient,
-  apiPath: string,
-  extraQuery: Record<string, string | number | boolean> = {},
-  maxPages: number = MAX_PAGES,
-): Promise<{ items: T[]; totalPages: number; pagesScanned: number }> {
-  const items: T[] = [];
-  let page = 1;
-  let knownTotalPages = Infinity;
-  let pagesScanned = 0;
-
-  while (page <= maxPages && page <= knownTotalPages) {
-    const batchSize = Math.min(
-      PAGE_CONCURRENCY,
-      maxPages - page + 1,
-      knownTotalPages - page + 1,
-    );
-    const pageNums = Array.from({ length: batchSize }, (_, i) => page + i);
-
-    const responses = await Promise.all(
-      pageNums.map((p) =>
-        client.request<ListResponse<T>>({
-          path: apiPath,
-          query: { ...extraQuery, page: p, per_page: 10 },
-        }),
-      ),
-    );
-
-    for (const resp of responses) {
-      pagesScanned++;
-      const batch = resp.data ?? [];
-      if (batch.length === 0) {
-        knownTotalPages = 0;
-        break;
-      }
-      items.push(...batch);
-      const meta = resp.meta?.pagination;
-      if (meta?.total_pages !== undefined && meta.total_pages < knownTotalPages) {
-        knownTotalPages = meta.total_pages;
-      }
-    }
-
-    page += pageNums.length;
-  }
-
-  return { items, totalPages: knownTotalPages === Infinity ? pagesScanned : knownTotalPages, pagesScanned };
-}
-
-/* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
 /* -------------------------------------------------------------------------- */
-
-function todayUTC(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 /** Map common country abbreviations/names to ISO 2-letter codes. */
 const COUNTRY_ALIASES: Record<string, string> = {
@@ -434,6 +302,7 @@ const fetchProducts = tool({
           is_pinned: p.is_pinned,
           is_dropped: p.is_dropped,
           image_url: p.image_url,
+          product_link: productLink(p.id),
           quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
           project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
         };
@@ -478,6 +347,7 @@ const getProduct = tool({
       is_favorite: p.is_favorite,
       image_url: p.image_url,
       source_url: p.url,
+      product_link: productLink(p.id),
       quantity: p.stocks?.data?.[0]?.quantity ?? null,
       project_name: p.stocks?.data?.[0]?.project?.data?.name ?? null,
     };
@@ -552,7 +422,7 @@ const getProductImages = tool({
 });
 
 /* -------------------------------------------------------------------------- */
-/*  Tool: snapshot today — fetch all + store in DB                             */
+/*  Tool: snapshot today — fetch all + store in DB + write public files       */
 /* -------------------------------------------------------------------------- */
 
 const snapshotToday = tool({
@@ -561,6 +431,8 @@ const snapshotToday = tool({
     "Fetch ALL marketplace products from COD Drop and store a daily snapshot in the database. " +
     "Also fetches the seller's own drop-products (which have quantity and warehouse info) and " +
     "cross-references them with marketplace products to enrich with quantity and project data. " +
+    "Writes public JSON + Excel files (coddata{date}.json/.xlsx), updates the latest.* aliases, " +
+    "and generates the day-over-day quantity-sold report vs the previous snapshot. " +
     "Call this once per day to build history for best-seller comparison. " +
     "Returns a summary of what was stored.",
   inputSchema: z.object({
@@ -570,63 +442,7 @@ const snapshotToday = tool({
       .describe("Override snapshot date (YYYY-MM-DD). Defaults to today UTC."),
   }),
   handler: async (input, client) => {
-    const date = input.date ?? todayUTC();
-
-    const [marketplaceResult, dropResult] = await Promise.all([
-      paginateAll<MarketplaceProduct>(client, "/seller/marketplace/products", { include: "stocks.project" }),
-      paginateAll<DropProduct>(client, "/seller/drop-products"),
-    ]);
-
-    const dropBySku = new Map<string, DropProduct>();
-    const dropByName = new Map<string, DropProduct>();
-    for (const dp of dropResult.items) {
-      if (dp.sku) {
-        dropBySku.set(dp.sku, dp);
-      }
-      dropByName.set(dp.name.toLowerCase(), dp);
-    }
-
-    const snapshots: ProductSnapshot[] = marketplaceResult.items.map((p) => {
-      const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
-      return {
-        product_id: p.id,
-        name: p.name,
-        sku: p.sku || "",
-        country: p.country,
-        country_name: p.country_name,
-        cost: p.price,
-        currency: p.currency,
-        recommended_selling_price: p.recommended_selling_price,
-        category: p.type.label,
-        in_stock: p.inStock,
-        available_for_drop: p.available_for_drop,
-        image_url: p.image_url,
-        quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
-        project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
-        snapshot_date: date,
-      };
-    });
-
-    upsertSnapshots(snapshots);
-
-    const countries = new Set(snapshots.map((s) => s.country_name));
-    const categories = new Set(snapshots.map((s) => s.category));
-    const inStockCount = snapshots.filter((s) => s.in_stock).length;
-    const withQuantity = snapshots.filter((s) => s.quantity !== null);
-
-    return {
-      snapshot_date: date,
-      total_products_stored: snapshots.length,
-      marketplace_pages_scanned: marketplaceResult.pagesScanned,
-      drop_products_scanned: dropResult.items.length,
-      products_with_quantity: withQuantity.length,
-      in_stock_count: inStockCount,
-      out_of_stock_count: snapshots.length - inStockCount,
-      countries: [...countries].sort(),
-      categories: [...categories].sort(),
-      summary: `Stored ${snapshots.length} products for ${date}. ` +
-        `${withQuantity.length} have quantity data from drop-products.`,
-    };
+    return runSnapshot(client, input.date);
   },
 });
 
@@ -712,6 +528,7 @@ const bestSellers = tool({
         today_quantity: r.today_qty,
         units_sold: r.qty_drop,
         image_url: r.image_url,
+        product_link: productLink(r.product_id),
       })),
     };
   },
@@ -776,7 +593,7 @@ const snapshotData = tool({
       snaps = snaps.filter((s) => s.category.toLowerCase().includes(cat));
     }
     if (input.in_stock !== undefined) {
-      snaps = snaps.filter((s) => s.in_stock === input.in_stock);
+      snaps = snaps.filter((s) => Boolean(s.in_stock) === input.in_stock);
     }
     if (input.search) {
       const s = input.search.toLowerCase();
@@ -826,11 +643,12 @@ const snapshotData = tool({
         currency: s.currency,
         recommended_selling_price: s.recommended_selling_price,
         category: s.category,
-        in_stock: s.in_stock,
-        available_for_drop: s.available_for_drop,
+        in_stock: Boolean(s.in_stock),
+        available_for_drop: Boolean(s.available_for_drop),
         quantity: s.quantity,
         project_name: s.project_name,
         image_url: s.image_url,
+        product_link: productLink(s.product_id),
       })),
     };
   },

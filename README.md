@@ -27,6 +27,40 @@ and compares quantities across days to identify **best-selling products**.
 3. After at least 2 snapshots exist, call `cod_drop_best_sellers` to see which
    products had the biggest quantity drop — those are your best sellers.
 
+## Public snapshot files (`/snapshots`)
+
+In HTTP mode the server publishes daily snapshots as public, no-auth files and
+lists them at `GET /snapshots` (newest first, grouped by date):
+
+| File | Format | Description |
+| ---- | ------ | ----------- |
+| `coddata{YYYY-MM-DD}.json` | JSON | Full daily snapshot (every product, incl. `product_link`) |
+| `coddata{YYYY-MM-DD}.xlsx` | Excel | Same data for humans; `image_url`/`product_link` are clickable hyperlinks |
+| `coddataQuantitySold{YYYY-MM-DD}.json` | JSON | Day-over-day quantity-sold report |
+| `coddataQuantitySold{YYYY-MM-DD}.xlsx` | Excel | Same report; `quantity_sold` shows `4`, `New 10`, `Removed 10`, or `Restock 10` |
+| `latest.json` / `latest.xlsx` | — | Always alias the most recent `coddata` snapshot |
+
+Each file is directly downloadable, e.g. `GET /snapshots/coddata2026-06-02.xlsx`
+or `GET /snapshots/latest.json`. SQLite remains the source of truth for tool
+responses; these files are output-only.
+
+### Quantity-sold logic
+
+For each product, comparing today vs. the previous snapshot:
+
+- **Sold** — `quantity_sold = yesterday − today` (a number, e.g. `4`)
+- **New** — present today but not yesterday → `"New {today}"`
+- **Removed** — present yesterday but missing today → `"Removed {yesterday}"`
+- **Restock** — today higher than yesterday → `"Restock {today − yesterday}"`
+
+## Daily automation (cron)
+
+The HTTP server runs an in-process scheduler that calls `cod_drop_snapshot_today`
+automatically once per day at a fixed UTC time (with retry + logging), then
+writes the files above. No external crontab is needed — `systemd`/Fly keeps the
+process alive. Configure via `SNAPSHOT_CRON_UTC` (default `01:00`),
+`SNAPSHOT_CRON_ATTEMPTS` (default `3`), or disable with `SNAPSHOT_CRON_DISABLED=1`.
+
 ## Authentication
 
 Set the `COD_NETWORK_API_TOKEN` environment variable with your seller API token.
@@ -73,6 +107,10 @@ fly deploy
 | `DATA_DIR` | No | Directory for SQLite database (default: `.` or `/data` in Docker) |
 | `PORT` | No | HTTP port (default: 8080) |
 | `MCP_PUBLIC_URL` | No | Public URL for OAuth discovery |
+| `SNAPSHOTS_DIR` | No | Directory for public snapshot files (default: `{DATA_DIR}/snapshots`) |
+| `SNAPSHOT_CRON_UTC` | No | Daily snapshot time, `HH:MM` UTC (default: `01:00`) |
+| `SNAPSHOT_CRON_ATTEMPTS` | No | Retry attempts on failure (default: `3`) |
+| `SNAPSHOT_CRON_DISABLED` | No | Set to `1` to disable the daily scheduler |
 
 ## License
 

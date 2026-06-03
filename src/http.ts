@@ -3,6 +3,7 @@
  * COD Drop Products MCP server — HTTP / Streamable HTTP entrypoint.
  */
 
+import fs from "node:fs";
 import express from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -14,6 +15,8 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { buildMcpServer, readCodConfig } from "./build-server.js";
 import { CodMcpOAuthProvider } from "./oauth.js";
+import { startDailySnapshotScheduler } from "./scheduler.js";
+import { renderSnapshotsIndexHtml, snapshotsDir } from "./snapshot-files.js";
 
 const log = (...args: unknown[]): void => {
   process.stderr.write(`[cod-drop-products-mcp:http] ${args.join(" ")}\n`);
@@ -63,6 +66,24 @@ async function main(): Promise<void> {
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true });
   });
+
+  // Public, no-auth snapshot artifacts: a listing page plus direct file access
+  // for coddata{date}.json/.xlsx, coddataQuantitySold{date}.json/.xlsx, and the
+  // latest.* aliases.
+  const snapDir = snapshotsDir();
+  fs.mkdirSync(snapDir, { recursive: true });
+  app.get(["/snapshots", "/snapshots/"], (_req, res) => {
+    res.type("html").send(renderSnapshotsIndexHtml("/snapshots"));
+  });
+  app.use(
+    "/snapshots",
+    express.static(snapDir, {
+      index: false,
+      setHeaders: (res) => {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+      },
+    }),
+  );
 
   app.get("/", (_req, res) => {
     res.json({
@@ -149,8 +170,11 @@ async function main(): Promise<void> {
   app.listen(port, host, () => {
     log(`Listening on ${host}:${port}`);
     log(`MCP endpoint: ${mcpResourceUrl}`);
+    log(`Snapshots: ${new URL("/snapshots", issuerUrl).toString()}`);
     log(`Tools registered: ${buildMcpServer(cfg).toolCount}`);
   });
+
+  startDailySnapshotScheduler((...args) => log("[cron]", ...args));
 }
 
 main().catch((err) => {
