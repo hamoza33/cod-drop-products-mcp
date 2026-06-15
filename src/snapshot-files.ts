@@ -16,6 +16,19 @@ import type { ProductSnapshot } from "./db.js";
 const DATA_DIR = process.env.DATA_DIR ?? ".";
 
 const LINK_FONT = { color: { argb: "FF0563C1" }, underline: true } as const;
+const SECTION_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } } as const;
+const SECTION_FONT = { bold: true, size: 13, color: { argb: "FF375623" } } as const;
+const IMAGE_WIDTH = 84;
+const IMAGE_HEIGHT = 84;
+const IMAGE_ROW_HEIGHT = 66;
+const IMAGE_FETCH_CONCURRENCY = 6;
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+
+type ExcelImageExtension = "jpeg" | "png" | "gif";
+interface FetchedImage {
+  base64: string;
+  extension: ExcelImageExtension;
+}
 
 /** Directory where public snapshot files live. */
 export function snapshotsDir(): string {
@@ -36,6 +49,91 @@ function setHyperlink(cell: ExcelJS.Cell, url: string | null | undefined): void 
   cell.value = { text: url, hyperlink: url };
   cell.font = { ...LINK_FONT };
 }
+
+function imageExtension(contentType: string | null, url: string): ExcelImageExtension | null {
+  const type = contentType?.toLowerCase() ?? "";
+  if (type.includes("png")) return "png";
+  if (type.includes("gif")) return "gif";
+  if (type.includes("jpeg") || type.includes("jpg")) return "jpeg";
+
+  const pathname = (() => {
+    try {
+      return new URL(url).pathname.toLowerCase();
+    } catch {
+      return url.toLowerCase();
+    }
+  })();
+  if (/\.png$/.test(pathname)) return "png";
+  if (/\.gif$/.test(pathname)) return "gif";
+  if (/\.(jpe?g|webp)$/.test(pathname)) return "jpeg";
+  return null;
+}
+
+async function fetchImage(url: string): Promise<FetchedImage | null> {
+  if (!url) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { redirect: "follow", signal: controller.signal });
+    if (!res.ok) return null;
+    const extension = imageExtension(res.headers.get("content-type"), res.url || url);
+    if (!extension) return null;
+    return {
+      base64: Buffer.from(await res.arrayBuffer()).toString("base64"),
+      extension,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchImagesByUrl(urls: string[]): Promise<Map<string, FetchedImage>> {
+  const uniqueUrls = [...new Set(urls.filter(Boolean))];
+  const images = new Map<string, FetchedImage>();
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < uniqueUrls.length) {
+      const url = uniqueUrls[next++];
+      const image = await fetchImage(url);
+      if (image) images.set(url, image);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(IMAGE_FETCH_CONCURRENCY, uniqueUrls.length) }, () =>
+      worker(),
+    ),
+  );
+  return images;
+}
+
+function addImageToCell(
+  wb: ExcelJS.Workbook,
+  ws: ExcelJS.Worksheet,
+  image: FetchedImage | undefined,
+  rowNumber: number,
+  columnNumber: number,
+): void {
+  if (!image) return;
+  const imageId = wb.addImage({ base64: image.base64, extension: image.extension });
+  ws.addImage(imageId, {
+    tl: { col: columnNumber - 1 + 0.1, row: rowNumber - 1 + 0.1 },
+    ext: { width: IMAGE_WIDTH, height: IMAGE_HEIGHT },
+    editAs: "oneCell",
+  });
+  ws.getRow(rowNumber).height = IMAGE_ROW_HEIGHT;
+}
+
+function addSectionRow(ws: ExcelJS.Worksheet, title: string): void {
+  const row = ws.addRow([title]);
+  row.font = { ...SECTION_FONT };
+  row.fill = { ...SECTION_FILL };
+  ws.mergeCells(row.number, 1, row.number, ws.columnCount);
+}
+
 
 /* -------------------------------------------------------------------------- */
 /*  Daily snapshot files                                                      */
@@ -104,21 +202,24 @@ export async function writeSnapshotFiles(
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("products");
+  const images = await fetchImagesByUrl(products.map((p) => p.image_url));
+
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
     { header: "name", key: "name", width: 40 },
     { header: "country", key: "country", width: 10 },
-    { header: "country_name", key: "country_name", width: 16 },
     { header: "category", key: "category", width: 18 },
     { header: "cost", key: "cost", width: 10 },
+    { header: "quantity", key: "quantity", width: 10 },
+    { header: "image_url", key: "image_url", width: 40 },
+    { header: "product_link", key: "product_link", width: 50 },
+    { header: "image", key: "image", width: 14 },
+    { header: "country_name", key: "country_name", width: 16 },
     { header: "currency", key: "currency", width: 10 },
     { header: "recommended_selling_price", key: "recommended_selling_price", width: 16 },
     { header: "in_stock", key: "in_stock", width: 10 },
     { header: "available_for_drop", key: "available_for_drop", width: 16 },
-    { header: "quantity", key: "quantity", width: 10 },
     { header: "project_name", key: "project_name", width: 20 },
-    { header: "image_url", key: "image_url", width: 40 },
-    { header: "product_link", key: "product_link", width: 50 },
   ];
   for (const p of products) {
     const row = ws.addRow({
@@ -137,8 +238,10 @@ export async function writeSnapshotFiles(
     });
     setHyperlink(row.getCell("image_url"), p.image_url);
     setHyperlink(row.getCell("product_link"), p.product_link);
+    addImageToCell(wb, ws, images.get(p.image_url), row.number, 9);
   }
   ws.getRow(1).font = { bold: true };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
 
   return { json: jsonPath, xlsx: xlsxPath };
@@ -221,6 +324,34 @@ export function computeQuantitySold(
   return rows;
 }
 
+function prefixedQuantity(value: QuantitySoldValue, prefix: string): number {
+  if (typeof value !== "string") return 0;
+  const match = new RegExp(`^${prefix}\\s+(\\d+)`).exec(value);
+  return match ? Number(match[1]) : 0;
+}
+
+function soldQuantity(value: QuantitySoldValue): number {
+  return typeof value === "number" && value > 0 ? value : 0;
+}
+
+function categorizeQuantityRows(rows: QuantitySoldRow[]): Array<[string, QuantitySoldRow[]]> {
+  const newlyAdded = rows
+    .filter((r) => typeof r.quantity_sold === "string" && r.quantity_sold.startsWith("New "))
+    .sort((a, b) => prefixedQuantity(b.quantity_sold, "New") - prefixedQuantity(a.quantity_sold, "New"));
+  const removed = rows
+    .filter((r) => typeof r.quantity_sold === "string" && r.quantity_sold.startsWith("Removed "))
+    .sort((a, b) => prefixedQuantity(b.quantity_sold, "Removed") - prefixedQuantity(a.quantity_sold, "Removed"));
+  const sold = rows
+    .filter((r) => soldQuantity(r.quantity_sold) > 0)
+    .sort((a, b) => soldQuantity(b.quantity_sold) - soldQuantity(a.quantity_sold));
+  return [
+    ["Newly added items — sorted by current quantity", newlyAdded],
+    ["Removed items", removed],
+    ["Sold items — sorted by quantity sold", sold],
+  ];
+}
+
+
 export async function writeQuantitySoldFiles(
   date: string,
   rows: QuantitySoldRow[],
@@ -246,6 +377,8 @@ export async function writeQuantitySoldFiles(
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("quantity_sold");
+  const images = await fetchImagesByUrl(rows.map((r) => r.image_url));
+
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
     { header: "name", key: "name", width: 40 },
@@ -255,20 +388,31 @@ export async function writeQuantitySoldFiles(
     { header: "quantity_sold", key: "quantity_sold", width: 16 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
+    { header: "image", key: "image", width: 14 },
   ];
-  for (const r of rows) {
-    const row = ws.addRow({
-      product_id: r.product_id,
-      name: r.name,
-      country: r.country,
-      quantity_yesterday: r.quantity_yesterday,
-      quantity_today: r.quantity_today,
-      quantity_sold: r.quantity_sold,
-    });
-    setHyperlink(row.getCell("image_url"), r.image_url);
-    setHyperlink(row.getCell("product_link"), r.product_link);
+
+  const header = ws.getRow(1);
+  header.font = { bold: true };
+  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
+
+  for (const [title, sectionRows] of categorizeQuantityRows(rows)) {
+    addSectionRow(ws, `${title} (${sectionRows.length})`);
+    for (const r of sectionRows) {
+      const row = ws.addRow({
+        product_id: r.product_id,
+        name: r.name,
+        country: r.country,
+        quantity_yesterday: r.quantity_yesterday,
+        quantity_today: r.quantity_today,
+        quantity_sold: r.quantity_sold,
+      });
+      setHyperlink(row.getCell("image_url"), r.image_url);
+      setHyperlink(row.getCell("product_link"), r.product_link);
+      addImageToCell(wb, ws, images.get(r.image_url), row.number, 9);
+    }
   }
-  ws.getRow(1).font = { bold: true };
+
+  ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
 
   return { json: jsonPath, xlsx: xlsxPath };

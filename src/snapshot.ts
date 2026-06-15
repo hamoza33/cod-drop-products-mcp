@@ -84,9 +84,7 @@ async function doRunSnapshot(
   if (prevDate) {
     const todayRows = getSnapshotsForDate(date);
     const prevRows = getSnapshotsForDate(prevDate);
-    const qs = computeQuantitySold(todayRows, prevRows).sort(
-      (a, b) => a.product_id - b.product_id,
-    );
+    const qs = computeQuantitySold(todayRows, prevRows);
     qsRows = qs.length;
     qsFiles = await writeQuantitySoldFiles(date, qs);
     log(`Wrote quantity-sold report (${qs.length} rows) vs ${prevDate}.`);
