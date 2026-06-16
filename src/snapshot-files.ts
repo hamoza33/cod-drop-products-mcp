@@ -11,6 +11,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
+
 import type { ProductSnapshot } from "./db.js";
 
 const DATA_DIR = process.env.DATA_DIR ?? ".";
@@ -100,17 +102,9 @@ function stableImageUrl(productId: number | string, fallbackUrl: string): string
   return `${base}/snapshots/images/${encodeURIComponent(String(productId))}`;
 }
 
-function excelString(s: string): string {
-  return s.replace(/"/g, '""');
-}
-
-
-function setImageFormula(cell: ExcelJS.Cell, url: string | null | undefined): void {
+function setImagePlaceholder(cell: ExcelJS.Cell, url: string | null | undefined): void {
   if (!url) return;
-  cell.value = {
-    formula: `IMAGE("${excelString(url)}","Product image",1)`,
-    result: "View image",
-  };
+  cell.value = { text: "Image", hyperlink: url, tooltip: url };
   cell.font = { ...LINK_FONT, bold: true };
   cell.alignment = { horizontal: "center", vertical: "middle" };
 }
@@ -141,6 +135,107 @@ function addSectionRow(ws: ExcelJS.Worksheet, title: string): void {
 /* -------------------------------------------------------------------------- */
 /*  Daily snapshot files                                                      */
 /* -------------------------------------------------------------------------- */
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+interface LinkedImagePlacement {
+  rowNumber: number;
+  columnNumber: number;
+  url: string;
+}
+
+function drawingXml(images: LinkedImagePlacement[]): string {
+  const anchors = images.map((image, index) => {
+    const row = image.rowNumber - 1;
+    const col = image.columnNumber - 1;
+    const id = index + 1;
+    return `
+  <xdr:twoCellAnchor editAs="oneCell">
+    <xdr:from><xdr:col>${col}</xdr:col><xdr:colOff>95250</xdr:colOff><xdr:row>${row}</xdr:row><xdr:rowOff>95250</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>${col + 1}</xdr:col><xdr:colOff>-95250</xdr:colOff><xdr:row>${row + 1}</xdr:row><xdr:rowOff>-95250</xdr:rowOff></xdr:to>
+    <xdr:pic>
+      <xdr:nvPicPr><xdr:cNvPr id="${id}" name="Product Image ${id}" descr="${xmlEscape(image.url)}"/><xdr:cNvPicPr/></xdr:nvPicPr>
+      <xdr:blipFill><a:blip r:link="rId${id}" cstate="print"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>
+      <xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>`;
+  }).join("");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors}
+</xdr:wsDr>`;
+}
+
+function drawingRelsXml(images: LinkedImagePlacement[]): string {
+  const rels = images.map((image, index) =>
+    `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${xmlEscape(image.url)}" TargetMode="External"/>`,
+  ).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`;
+}
+
+async function addLinkedImagesToXlsx(
+  xlsxPath: string,
+  sheetNumber: number,
+  images: LinkedImagePlacement[],
+): Promise<void> {
+  if (images.length === 0) return;
+  const zip = await JSZip.loadAsync(fs.readFileSync(xlsxPath));
+  const sheetPath = `xl/worksheets/sheet${sheetNumber}.xml`;
+  const sheetRelsPath = `xl/worksheets/_rels/sheet${sheetNumber}.xml.rels`;
+  const drawingPath = `xl/drawings/drawing${sheetNumber}.xml`;
+  const drawingRelsPath = `xl/drawings/_rels/drawing${sheetNumber}.xml.rels`;
+  const drawingRelId = `rIdLinkedImages${sheetNumber}`;
+
+  const sheetFile = zip.file(sheetPath);
+  if (!sheetFile) return;
+  let sheetXml = await sheetFile.async("string");
+  if (!sheetXml.includes("<drawing ")) {
+    sheetXml = sheetXml.replace(
+      "</worksheet>",
+      `<drawing r:id="${drawingRelId}"/></worksheet>`,
+    );
+  }
+  zip.file(sheetPath, sheetXml);
+
+  const sheetRelsFile = zip.file(sheetRelsPath);
+  let sheetRels = sheetRelsFile
+    ? await sheetRelsFile.async("string")
+    : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  if (!sheetRels.includes(`Id="${drawingRelId}"`)) {
+    sheetRels = sheetRels.replace(
+      "</Relationships>",
+      `<Relationship Id="${drawingRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${sheetNumber}.xml"/></Relationships>`,
+    );
+  }
+  zip.file(sheetRelsPath, sheetRels);
+  zip.file(drawingPath, drawingXml(images));
+  zip.file(drawingRelsPath, drawingRelsXml(images));
+
+  const contentTypesFile = zip.file("[Content_Types].xml");
+  if (contentTypesFile) {
+    let contentTypes = await contentTypesFile.async("string");
+    const override = `/xl/drawings/drawing${sheetNumber}.xml`;
+    if (!contentTypes.includes(`PartName="${override}"`)) {
+      contentTypes = contentTypes.replace(
+        "</Types>",
+        `<Override PartName="${override}" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`,
+      );
+      zip.file("[Content_Types].xml", contentTypes);
+    }
+  }
+
+  fs.writeFileSync(xlsxPath, await zip.generateAsync({ type: "nodebuffer" }));
+}
+
 
 export interface SnapshotFileProduct {
   product_id: number;
@@ -224,6 +319,7 @@ export async function writeSnapshotFiles(
     { header: "available_for_drop", key: "available_for_drop", width: 16 },
     { header: "project_name", key: "project_name", width: 20 },
   ];
+  const linkedImages: LinkedImagePlacement[] = [];
   for (const p of products) {
     const row = ws.addRow({
       product_id: p.product_id,
@@ -242,13 +338,15 @@ export async function writeSnapshotFiles(
     setHyperlink(row.getCell("image_url"), p.image_url);
     setHyperlink(row.getCell("product_link"), p.product_link);
     const imageUrl = stableImageUrl(p.product_id, p.image_url);
-    setImageFormula(row.getCell("image"), imageUrl);
+    setImagePlaceholder(row.getCell("image"), imageUrl);
+    linkedImages.push({ rowNumber: row.number, columnNumber: 9, url: imageUrl });
     styleCountryCell(row.getCell("country"), p.country, countryColors);
     row.height = IMAGE_ROW_HEIGHT;
   }
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
+  await addLinkedImagesToXlsx(xlsxPath, 1, linkedImages);
 
   return { json: jsonPath, xlsx: xlsxPath };
 }
@@ -402,6 +500,7 @@ export async function writeQuantitySoldFiles(
   header.font = { bold: true };
   header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
 
+  const linkedImages: LinkedImagePlacement[] = [];
   for (const [title, sectionRows] of categorizeQuantityRows(rows)) {
     addSectionRow(ws, `${title} (${sectionRows.length})`);
     for (const r of sectionRows) {
@@ -416,7 +515,8 @@ export async function writeQuantitySoldFiles(
       setHyperlink(row.getCell("image_url"), r.image_url);
       setHyperlink(row.getCell("product_link"), r.product_link);
       const imageUrl = stableImageUrl(r.product_id, r.image_url);
-      setImageFormula(row.getCell("image"), imageUrl);
+      setImagePlaceholder(row.getCell("image"), imageUrl);
+      linkedImages.push({ rowNumber: row.number, columnNumber: 9, url: imageUrl });
       styleCountryCell(row.getCell("country"), r.country, countryColors);
       row.height = IMAGE_ROW_HEIGHT;
     }
@@ -424,6 +524,7 @@ export async function writeQuantitySoldFiles(
 
   ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
+  await addLinkedImagesToXlsx(xlsxPath, 1, linkedImages);
 
   return { json: jsonPath, xlsx: xlsxPath };
 }
