@@ -20,9 +20,9 @@ const DATA_DIR = process.env.DATA_DIR ?? ".";
 const LINK_FONT = { color: { argb: "FF0563C1" }, underline: true } as const;
 const SECTION_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } } as const;
 const SECTION_FONT = { bold: true, size: 13, color: { argb: "FF375623" } } as const;
-const IMAGE_ROW_HEIGHT = 72;
-const IMAGE_WIDTH = 72;
-const IMAGE_HEIGHT = 72;
+const IMAGE_ROW_HEIGHT = 128;
+const IMAGE_WIDTH = 170;
+const IMAGE_HEIGHT = 170;
 const IMAGE_FETCH_CONCURRENCY = 6;
 const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const COUNTRY_COLORS = [
@@ -100,7 +100,7 @@ function publicBaseUrl(): string | null {
   }
 }
 
-function stableImageUrl(productId: number | string, fallbackUrl: string): string {
+export function stableImageUrl(productId: number | string, fallbackUrl: string): string {
   const base = publicBaseUrl();
   if (!base) return fallbackUrl;
   return `${base}/snapshots/images/${encodeURIComponent(String(productId))}`;
@@ -279,7 +279,7 @@ export async function writeSnapshotFiles(
     { header: "quantity", key: "quantity", width: 10 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 14 },
+    { header: "image", key: "image", width: 24 },
     { header: "country_name", key: "country_name", width: 16 },
     { header: "currency", key: "currency", width: 10 },
     { header: "recommended_selling_price", key: "recommended_selling_price", width: 16 },
@@ -459,7 +459,7 @@ export async function writeQuantitySoldFiles(
     { header: "quantity_sold", key: "quantity_sold", width: 16 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 14 },
+    { header: "image", key: "image", width: 24 },
   ];
 
   const header = ws.getRow(1);

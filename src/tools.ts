@@ -19,6 +19,7 @@ import {
   getSnapshotsForDate,
   getSnapshotCount,
   getLatestTwoDates,
+  type ProductSnapshot,
 } from "./db.js";
 import {
   paginateAll,
@@ -27,7 +28,7 @@ import {
   type DropProduct,
 } from "./marketplace.js";
 import { runSnapshot } from "./snapshot.js";
-import { productLink } from "./snapshot-files.js";
+import { productLink, stableImageUrl } from "./snapshot-files.js";
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                     */
@@ -187,6 +188,80 @@ function applyFilters(
   return result;
 }
 
+
+function marketplaceProductResponse(
+  p: MarketplaceProduct,
+  dropMatch?: DropProduct,
+): Record<string, unknown> {
+  const quantity = p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null;
+  const project = p.stocks?.data?.[0]?.project?.data;
+  return {
+    id: p.id,
+    product_id: p.id,
+    name: p.name,
+    sku: p.sku || null,
+    slug: p.slug,
+    description: p.description,
+    country: p.country,
+    country_name: p.country_name,
+    cost: p.price,
+    currency: p.currency,
+    backup_price_currency: p.backup_price_currency,
+    recommended_selling_price: p.recommended_selling_price,
+    category: p.type.label,
+    category_code: p.type.code,
+    in_stock: p.inStock,
+    available_for_drop: p.available_for_drop,
+    available_for_sourcing: p.available_for_sourcing,
+    is_pinned: p.is_pinned,
+    is_dropped: p.is_dropped,
+    is_favorite: p.is_favorite,
+    image_url: p.image_url,
+    image_preview_url: stableImageUrl(p.id, p.image_url),
+    path_image: p.path_image,
+    source_url: p.url,
+    product_link: productLink(p.id),
+    quantity,
+    project_id: project?.id ?? null,
+    project_name: project?.name ?? dropMatch?.project_name ?? null,
+    drop_product: dropMatch ? {
+      id: dropMatch.id,
+      quantity: dropMatch.quantity,
+      project_name: dropMatch.project_name,
+      product_cost: dropMatch.product_cost,
+      notes: dropMatch.notes,
+      is_low_quantity: dropMatch.is_low_quantity,
+      is_enabled: dropMatch.is_enabled,
+      created_at: dropMatch.created_at,
+      marketplace_status: dropMatch.marketplace_status,
+      up_sell_and_backup_prices: dropMatch.up_sell_and_backup_prices,
+    } : null,
+  };
+}
+
+function snapshotProductResponse(s: ProductSnapshot): Record<string, unknown> {
+  return {
+    product_id: s.product_id,
+    id: s.product_id,
+    name: s.name,
+    sku: s.sku || null,
+    country: s.country,
+    country_name: s.country_name,
+    cost: s.cost,
+    currency: s.currency,
+    recommended_selling_price: s.recommended_selling_price,
+    category: s.category,
+    in_stock: Boolean(s.in_stock),
+    available_for_drop: Boolean(s.available_for_drop),
+    quantity: s.quantity,
+    project_name: s.project_name,
+    image_url: s.image_url,
+    image_preview_url: stableImageUrl(s.product_id, s.image_url),
+    product_link: productLink(s.product_id),
+    snapshot_date: s.snapshot_date,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Tool: fetch marketplace products with filters                             */
 /* -------------------------------------------------------------------------- */
@@ -287,25 +362,7 @@ const fetchProducts = tool({
       total_api_pages: totalPages,
       products: page.map((p) => {
         const dropMatch = (p.sku ? dropBySku.get(p.sku) : undefined) ?? dropByName.get(p.name.toLowerCase());
-        return {
-          id: p.id,
-          name: p.name,
-          sku: p.sku || null,
-          country: p.country,
-          country_name: p.country_name,
-          cost: p.price,
-          currency: p.currency,
-          recommended_selling_price: p.recommended_selling_price,
-          category: p.type.label,
-          in_stock: p.inStock,
-          available_for_drop: p.available_for_drop,
-          is_pinned: p.is_pinned,
-          is_dropped: p.is_dropped,
-          image_url: p.image_url,
-          product_link: productLink(p.id),
-          quantity: p.stocks?.data?.[0]?.quantity ?? dropMatch?.quantity ?? null,
-          project_name: p.stocks?.data?.[0]?.project?.data?.name ?? dropMatch?.project_name ?? null,
-        };
+        return marketplaceProductResponse(p, dropMatch);
       }),
     };
   },
@@ -327,30 +384,7 @@ const getProduct = tool({
       query: { include: "stocks.project" },
     });
     const p = resp.data;
-    return {
-      id: p.id,
-      name: p.name,
-      sku: p.sku || null,
-      slug: p.slug,
-      description: p.description,
-      country: p.country,
-      country_name: p.country_name,
-      cost: p.price,
-      currency: p.currency,
-      recommended_selling_price: p.recommended_selling_price,
-      category: p.type.label,
-      in_stock: p.inStock,
-      available_for_drop: p.available_for_drop,
-      available_for_sourcing: p.available_for_sourcing,
-      is_pinned: p.is_pinned,
-      is_dropped: p.is_dropped,
-      is_favorite: p.is_favorite,
-      image_url: p.image_url,
-      source_url: p.url,
-      product_link: productLink(p.id),
-      quantity: p.stocks?.data?.[0]?.quantity ?? null,
-      project_name: p.stocks?.data?.[0]?.project?.data?.name ?? null,
-    };
+    return marketplaceProductResponse(p);
   },
 });
 
@@ -383,7 +417,9 @@ const getProductImages = tool({
               id: resp.data.id,
               name: resp.data.name,
               image_url: resp.data.image_url,
+              image_preview_url: stableImageUrl(resp.data.id, resp.data.image_url),
               path_image: resp.data.path_image,
+              product_link: productLink(resp.data.id),
             };
           } catch {
             return { id, name: null, image_url: null, path_image: null, error: "not found" };
@@ -415,7 +451,9 @@ const getProductImages = tool({
         id: p.id,
         name: p.name,
         image_url: p.image_url,
+        image_preview_url: stableImageUrl(p.id, p.image_url),
         path_image: p.path_image,
+        product_link: productLink(p.id),
       })),
     };
   },
@@ -528,6 +566,7 @@ const bestSellers = tool({
         today_quantity: r.today_qty,
         units_sold: r.qty_drop,
         image_url: r.image_url,
+        image_preview_url: stableImageUrl(r.product_id, r.image_url),
         product_link: productLink(r.product_id),
       })),
     };
@@ -633,23 +672,7 @@ const snapshotData = tool({
       returned: page.length,
       offset,
       limit,
-      products: page.map((s) => ({
-        product_id: s.product_id,
-        name: s.name,
-        sku: s.sku || null,
-        country: s.country,
-        country_name: s.country_name,
-        cost: s.cost,
-        currency: s.currency,
-        recommended_selling_price: s.recommended_selling_price,
-        category: s.category,
-        in_stock: Boolean(s.in_stock),
-        available_for_drop: Boolean(s.available_for_drop),
-        quantity: s.quantity,
-        project_name: s.project_name,
-        image_url: s.image_url,
-        product_link: productLink(s.product_id),
-      })),
+      products: page.map(snapshotProductResponse),
     };
   },
 });
