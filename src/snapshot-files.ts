@@ -20,9 +20,9 @@ const DATA_DIR = process.env.DATA_DIR ?? ".";
 const LINK_FONT = { color: { argb: "FF0563C1" }, underline: true } as const;
 const SECTION_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } } as const;
 const SECTION_FONT = { bold: true, size: 13, color: { argb: "FF375623" } } as const;
-const IMAGE_ROW_HEIGHT = 44;
-const IMAGE_WIDTH = 44;
-const IMAGE_HEIGHT = 44;
+const IMAGE_ROW_HEIGHT = 72;
+const IMAGE_WIDTH = 72;
+const IMAGE_HEIGHT = 72;
 const IMAGE_FETCH_CONCURRENCY = 6;
 const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const COUNTRY_COLORS = [
@@ -157,7 +157,7 @@ async function fetchThumbnail(url: string): Promise<FetchedThumbnail | null> {
         fit: "inside",
         withoutEnlargement: true,
       })
-      .jpeg({ quality: 35, mozjpeg: true })
+      .jpeg({ quality: 62, mozjpeg: true })
       .toBuffer();
     return { base64: thumbnail.toString("base64") };
   } catch {
@@ -198,7 +198,7 @@ function addThumbnailToCell(
   if (!thumbnail) return;
   const imageId = wb.addImage({ base64: thumbnail.base64, extension: "jpeg" });
   ws.addImage(imageId, {
-    tl: { col: columnNumber - 1 + 0.15, row: rowNumber - 1 + 0.15 },
+    tl: { col: columnNumber - 1 + 0.05, row: rowNumber - 1 + 0.05 },
     ext: { width: IMAGE_WIDTH, height: IMAGE_HEIGHT },
     editAs: "oneCell",
   });
@@ -279,7 +279,7 @@ export async function writeSnapshotFiles(
     { header: "quantity", key: "quantity", width: 10 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 10 },
+    { header: "image", key: "image", width: 14 },
     { header: "country_name", key: "country_name", width: 16 },
     { header: "currency", key: "currency", width: 10 },
     { header: "recommended_selling_price", key: "recommended_selling_price", width: 16 },
@@ -459,7 +459,7 @@ export async function writeQuantitySoldFiles(
     { header: "quantity_sold", key: "quantity_sold", width: 16 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 10 },
+    { header: "image", key: "image", width: 14 },
   ];
 
   const header = ws.getRow(1);
