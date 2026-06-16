@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import ExcelJS from "exceljs";
-import JSZip from "jszip";
+import sharp from "sharp";
 
 import type { ProductSnapshot } from "./db.js";
 
@@ -20,7 +20,11 @@ const DATA_DIR = process.env.DATA_DIR ?? ".";
 const LINK_FONT = { color: { argb: "FF0563C1" }, underline: true } as const;
 const SECTION_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } } as const;
 const SECTION_FONT = { bold: true, size: 13, color: { argb: "FF375623" } } as const;
-const IMAGE_ROW_HEIGHT = 66;
+const IMAGE_ROW_HEIGHT = 44;
+const IMAGE_WIDTH = 44;
+const IMAGE_HEIGHT = 44;
+const IMAGE_FETCH_CONCURRENCY = 6;
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const COUNTRY_COLORS = [
   "FFFFE699",
   "FFD9EAD3",
@@ -136,106 +140,69 @@ function addSectionRow(ws: ExcelJS.Worksheet, title: string): void {
 /*  Daily snapshot files                                                      */
 /* -------------------------------------------------------------------------- */
 
-function xmlEscape(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+interface FetchedThumbnail {
+  base64: string;
 }
 
-interface LinkedImagePlacement {
-  rowNumber: number;
-  columnNumber: number;
-  url: string;
-}
-
-function drawingXml(images: LinkedImagePlacement[]): string {
-  const anchors = images.map((image, index) => {
-    const row = image.rowNumber - 1;
-    const col = image.columnNumber - 1;
-    const id = index + 1;
-    return `
-  <xdr:twoCellAnchor editAs="oneCell">
-    <xdr:from><xdr:col>${col}</xdr:col><xdr:colOff>95250</xdr:colOff><xdr:row>${row}</xdr:row><xdr:rowOff>95250</xdr:rowOff></xdr:from>
-    <xdr:to><xdr:col>${col + 1}</xdr:col><xdr:colOff>-95250</xdr:colOff><xdr:row>${row + 1}</xdr:row><xdr:rowOff>-95250</xdr:rowOff></xdr:to>
-    <xdr:pic>
-      <xdr:nvPicPr><xdr:cNvPr id="${id}" name="Product Image ${id}" descr="${xmlEscape(image.url)}"/><xdr:cNvPicPr/></xdr:nvPicPr>
-      <xdr:blipFill><a:blip r:link="rId${id}" cstate="print"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>
-      <xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>
-    </xdr:pic>
-    <xdr:clientData/>
-  </xdr:twoCellAnchor>`;
-  }).join("");
-
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors}
-</xdr:wsDr>`;
-}
-
-function drawingRelsXml(images: LinkedImagePlacement[]): string {
-  const rels = images.map((image, index) =>
-    `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${xmlEscape(image.url)}" TargetMode="External"/>`,
-  ).join("");
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`;
-}
-
-async function addLinkedImagesToXlsx(
-  xlsxPath: string,
-  sheetNumber: number,
-  images: LinkedImagePlacement[],
-): Promise<void> {
-  if (images.length === 0) return;
-  const zip = await JSZip.loadAsync(fs.readFileSync(xlsxPath));
-  const sheetPath = `xl/worksheets/sheet${sheetNumber}.xml`;
-  const sheetRelsPath = `xl/worksheets/_rels/sheet${sheetNumber}.xml.rels`;
-  const drawingPath = `xl/drawings/drawing${sheetNumber}.xml`;
-  const drawingRelsPath = `xl/drawings/_rels/drawing${sheetNumber}.xml.rels`;
-  const drawingRelId = `rIdLinkedImages${sheetNumber}`;
-
-  const sheetFile = zip.file(sheetPath);
-  if (!sheetFile) return;
-  let sheetXml = await sheetFile.async("string");
-  if (!sheetXml.includes("<drawing ")) {
-    sheetXml = sheetXml.replace(
-      "</worksheet>",
-      `<drawing r:id="${drawingRelId}"/></worksheet>`,
-    );
+async function fetchThumbnail(url: string): Promise<FetchedThumbnail | null> {
+  if (!url) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { redirect: "follow", signal: controller.signal });
+    if (!res.ok) return null;
+    const input = Buffer.from(await res.arrayBuffer());
+    const thumbnail = await sharp(input, { limitInputPixels: 30_000_000 })
+      .resize(IMAGE_WIDTH, IMAGE_HEIGHT, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 35, mozjpeg: true })
+      .toBuffer();
+    return { base64: thumbnail.toString("base64") };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
-  zip.file(sheetPath, sheetXml);
+}
 
-  const sheetRelsFile = zip.file(sheetRelsPath);
-  let sheetRels = sheetRelsFile
-    ? await sheetRelsFile.async("string")
-    : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
-  if (!sheetRels.includes(`Id="${drawingRelId}"`)) {
-    sheetRels = sheetRels.replace(
-      "</Relationships>",
-      `<Relationship Id="${drawingRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${sheetNumber}.xml"/></Relationships>`,
-    );
-  }
-  zip.file(sheetRelsPath, sheetRels);
-  zip.file(drawingPath, drawingXml(images));
-  zip.file(drawingRelsPath, drawingRelsXml(images));
+async function fetchThumbnailsByUrl(urls: string[]): Promise<Map<string, FetchedThumbnail>> {
+  const uniqueUrls = [...new Set(urls.filter(Boolean))];
+  const thumbnails = new Map<string, FetchedThumbnail>();
+  let next = 0;
 
-  const contentTypesFile = zip.file("[Content_Types].xml");
-  if (contentTypesFile) {
-    let contentTypes = await contentTypesFile.async("string");
-    const override = `/xl/drawings/drawing${sheetNumber}.xml`;
-    if (!contentTypes.includes(`PartName="${override}"`)) {
-      contentTypes = contentTypes.replace(
-        "</Types>",
-        `<Override PartName="${override}" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`,
-      );
-      zip.file("[Content_Types].xml", contentTypes);
+  async function worker(): Promise<void> {
+    while (next < uniqueUrls.length) {
+      const url = uniqueUrls[next++];
+      const thumbnail = await fetchThumbnail(url);
+      if (thumbnail) thumbnails.set(url, thumbnail);
     }
   }
 
-  fs.writeFileSync(xlsxPath, await zip.generateAsync({ type: "nodebuffer" }));
+  await Promise.all(
+    Array.from({ length: Math.min(IMAGE_FETCH_CONCURRENCY, uniqueUrls.length) }, () =>
+      worker(),
+    ),
+  );
+  return thumbnails;
 }
 
+function addThumbnailToCell(
+  wb: ExcelJS.Workbook,
+  ws: ExcelJS.Worksheet,
+  thumbnail: FetchedThumbnail | undefined,
+  rowNumber: number,
+  columnNumber: number,
+): void {
+  if (!thumbnail) return;
+  const imageId = wb.addImage({ base64: thumbnail.base64, extension: "jpeg" });
+  ws.addImage(imageId, {
+    tl: { col: columnNumber - 1 + 0.15, row: rowNumber - 1 + 0.15 },
+    ext: { width: IMAGE_WIDTH, height: IMAGE_HEIGHT },
+    editAs: "oneCell",
+  });
+}
 
 export interface SnapshotFileProduct {
   product_id: number;
@@ -301,6 +268,7 @@ export async function writeSnapshotFiles(
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("products");
   const countryColors = countryColorMap(products.map((p) => p.country));
+  const thumbnails = await fetchThumbnailsByUrl(products.map((p) => p.image_url));
 
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
@@ -311,7 +279,7 @@ export async function writeSnapshotFiles(
     { header: "quantity", key: "quantity", width: 10 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 14 },
+    { header: "image", key: "image", width: 10 },
     { header: "country_name", key: "country_name", width: 16 },
     { header: "currency", key: "currency", width: 10 },
     { header: "recommended_selling_price", key: "recommended_selling_price", width: 16 },
@@ -319,7 +287,6 @@ export async function writeSnapshotFiles(
     { header: "available_for_drop", key: "available_for_drop", width: 16 },
     { header: "project_name", key: "project_name", width: 20 },
   ];
-  const linkedImages: LinkedImagePlacement[] = [];
   for (const p of products) {
     const row = ws.addRow({
       product_id: p.product_id,
@@ -339,14 +306,13 @@ export async function writeSnapshotFiles(
     setHyperlink(row.getCell("product_link"), p.product_link);
     const imageUrl = stableImageUrl(p.product_id, p.image_url);
     setImagePlaceholder(row.getCell("image"), imageUrl);
-    linkedImages.push({ rowNumber: row.number, columnNumber: 9, url: imageUrl });
+    addThumbnailToCell(wb, ws, thumbnails.get(p.image_url), row.number, 9);
     styleCountryCell(row.getCell("country"), p.country, countryColors);
     row.height = IMAGE_ROW_HEIGHT;
   }
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
-  await addLinkedImagesToXlsx(xlsxPath, 1, linkedImages);
 
   return { json: jsonPath, xlsx: xlsxPath };
 }
@@ -482,7 +448,7 @@ export async function writeQuantitySoldFiles(
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("quantity_sold");
   const countryColors = countryColorMap(rows.map((r) => r.country));
-
+  const thumbnails = await fetchThumbnailsByUrl(rows.map((r) => r.image_url));
 
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
@@ -493,14 +459,13 @@ export async function writeQuantitySoldFiles(
     { header: "quantity_sold", key: "quantity_sold", width: 16 },
     { header: "image_url", key: "image_url", width: 40 },
     { header: "product_link", key: "product_link", width: 50 },
-    { header: "image", key: "image", width: 14 },
+    { header: "image", key: "image", width: 10 },
   ];
 
   const header = ws.getRow(1);
   header.font = { bold: true };
   header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
 
-  const linkedImages: LinkedImagePlacement[] = [];
   for (const [title, sectionRows] of categorizeQuantityRows(rows)) {
     addSectionRow(ws, `${title} (${sectionRows.length})`);
     for (const r of sectionRows) {
@@ -516,7 +481,7 @@ export async function writeQuantitySoldFiles(
       setHyperlink(row.getCell("product_link"), r.product_link);
       const imageUrl = stableImageUrl(r.product_id, r.image_url);
       setImagePlaceholder(row.getCell("image"), imageUrl);
-      linkedImages.push({ rowNumber: row.number, columnNumber: 9, url: imageUrl });
+      addThumbnailToCell(wb, ws, thumbnails.get(r.image_url), row.number, 9);
       styleCountryCell(row.getCell("country"), r.country, countryColors);
       row.height = IMAGE_ROW_HEIGHT;
     }
@@ -524,7 +489,6 @@ export async function writeQuantitySoldFiles(
 
   ws.views = [{ state: "frozen", ySplit: 1 }];
   await wb.xlsx.writeFile(xlsxPath);
-  await addLinkedImagesToXlsx(xlsxPath, 1, linkedImages);
 
   return { json: jsonPath, xlsx: xlsxPath };
 }
