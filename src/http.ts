@@ -14,6 +14,8 @@ import {
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { buildMcpServer, readCodConfig } from "./build-server.js";
+import { CodApiError, CodClient } from "./client.js";
+import { getSnapshotsForDate, getSnapshotDates } from "./db.js";
 import { CodMcpOAuthProvider } from "./oauth.js";
 import { startDailySnapshotScheduler } from "./scheduler.js";
 import { renderSnapshotsIndexHtml, snapshotsDir } from "./snapshot-files.js";
@@ -30,6 +32,57 @@ function methodNotAllowed(res: Response): void {
       id: null,
     }),
   );
+}
+
+interface MarketplaceImageResponse {
+  data?: {
+    image_url?: string;
+  };
+}
+
+function imageUrlFromSnapshots(productId: number): string | null {
+  for (const date of getSnapshotDates()) {
+    const product = getSnapshotsForDate(date).find((p) => p.product_id === productId);
+    if (product?.image_url) return product.image_url;
+  }
+  return null;
+}
+
+async function proxyProductImage(
+  client: CodClient,
+  productId: number,
+  res: Response,
+): Promise<void> {
+  let imageUrl = imageUrlFromSnapshots(productId);
+  if (!imageUrl) {
+    try {
+      const product = await client.request<MarketplaceImageResponse>({
+        path: `/seller/marketplace/products/${productId}`,
+      });
+      imageUrl = product.data?.image_url ?? null;
+    } catch (err) {
+      if (!(err instanceof CodApiError && err.status === 404)) throw err;
+    }
+  }
+
+  if (!imageUrl) {
+    res.status(404).send("Image not found");
+    return;
+  }
+
+  const upstream = await fetch(imageUrl, { redirect: "follow" });
+  if (!upstream.ok || !upstream.body) {
+    res.status(upstream.status || 502).send("Unable to fetch image");
+    return;
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "image/jpeg");
+  const length = upstream.headers.get("content-length");
+  if (length) res.setHeader("Content-Length", length);
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.end(body);
 }
 
 async function main(): Promise<void> {
@@ -72,6 +125,26 @@ async function main(): Promise<void> {
   // latest.* aliases.
   const snapDir = snapshotsDir();
   fs.mkdirSync(snapDir, { recursive: true });
+  const codClient = new CodClient({
+    token: cfg.token,
+    baseUrl: cfg.baseUrl,
+    timeoutMs: cfg.timeoutMs,
+  });
+
+  app.get("/snapshots/images/:productId", async (req, res) => {
+    const productId = Number.parseInt(req.params.productId, 10);
+    if (!Number.isFinite(productId)) {
+      res.status(400).send("Invalid product id");
+      return;
+    }
+    try {
+      await proxyProductImage(codClient, productId, res);
+    } catch (err) {
+      log("Image proxy error:", err instanceof Error ? err.message : String(err));
+      res.status(502).send("Unable to fetch image");
+    }
+  });
+
   app.get(["/snapshots", "/snapshots/"], (_req, res) => {
     res.type("html").send(renderSnapshotsIndexHtml("/snapshots"));
   });

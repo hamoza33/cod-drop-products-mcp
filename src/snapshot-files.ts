@@ -18,17 +18,51 @@ const DATA_DIR = process.env.DATA_DIR ?? ".";
 const LINK_FONT = { color: { argb: "FF0563C1" }, underline: true } as const;
 const SECTION_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } } as const;
 const SECTION_FONT = { bold: true, size: 13, color: { argb: "FF375623" } } as const;
-const IMAGE_WIDTH = 84;
-const IMAGE_HEIGHT = 84;
 const IMAGE_ROW_HEIGHT = 66;
-const IMAGE_FETCH_CONCURRENCY = 6;
-const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+const COUNTRY_COLORS = [
+  "FFFFE699",
+  "FFD9EAD3",
+  "FFCFE2F3",
+  "FFF4CCCC",
+  "FFD9D2E9",
+  "FFFFD966",
+  "FFB6D7A8",
+  "FFA4C2F4",
+  "FFEA9999",
+  "FFB4A7D6",
+  "FFFFC000",
+  "FF93C47D",
+  "FF6FA8DC",
+  "FFE06666",
+  "FF8E7CC3",
+] as const;
 
-type ExcelImageExtension = "jpeg" | "png" | "gif";
-interface FetchedImage {
-  base64: string;
-  extension: ExcelImageExtension;
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  const [r1, g1, b1] =
+    hp < 1 ? [c, x, 0] :
+    hp < 2 ? [x, c, 0] :
+    hp < 3 ? [0, c, x] :
+    hp < 4 ? [0, x, c] :
+    hp < 5 ? [x, 0, c] : [c, 0, x];
+  const m = l - c / 2;
+  return [r1 + m, g1 + m, b1 + m].map((v) => Math.round(v * 255)) as [number, number, number];
 }
+
+function generatedCountryColor(index: number): string {
+  if (index < COUNTRY_COLORS.length) return COUNTRY_COLORS[index];
+  const hue = (index * 137.508) % 360;
+  const [r, g, b] = hslToRgb(hue, 0.55, 0.82);
+  return `FF${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+function countryColorMap(countries: string[]): Map<string, string> {
+  const unique = [...new Set(countries.filter(Boolean))].sort();
+  return new Map(unique.map((country, index) => [country, generatedCountryColor(index)]));
+}
+
 
 /** Directory where public snapshot files live. */
 export function snapshotsDir(): string {
@@ -50,81 +84,50 @@ function setHyperlink(cell: ExcelJS.Cell, url: string | null | undefined): void 
   cell.font = { ...LINK_FONT };
 }
 
-function imageExtension(contentType: string | null, url: string): ExcelImageExtension | null {
-  const type = contentType?.toLowerCase() ?? "";
-  if (type.includes("png")) return "png";
-  if (type.includes("gif")) return "gif";
-  if (type.includes("jpeg") || type.includes("jpg")) return "jpeg";
-
-  const pathname = (() => {
-    try {
-      return new URL(url).pathname.toLowerCase();
-    } catch {
-      return url.toLowerCase();
-    }
-  })();
-  if (/\.png$/.test(pathname)) return "png";
-  if (/\.gif$/.test(pathname)) return "gif";
-  if (/\.(jpe?g|webp)$/.test(pathname)) return "jpeg";
-  return null;
-}
-
-async function fetchImage(url: string): Promise<FetchedImage | null> {
-  if (!url) return null;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+function publicBaseUrl(): string | null {
+  const raw = process.env.MCP_PUBLIC_URL;
+  if (!raw) return null;
   try {
-    const res = await fetch(url, { redirect: "follow", signal: controller.signal });
-    if (!res.ok) return null;
-    const extension = imageExtension(res.headers.get("content-type"), res.url || url);
-    if (!extension) return null;
-    return {
-      base64: Buffer.from(await res.arrayBuffer()).toString("base64"),
-      extension,
-    };
+    return new URL(raw).origin;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
-async function fetchImagesByUrl(urls: string[]): Promise<Map<string, FetchedImage>> {
-  const uniqueUrls = [...new Set(urls.filter(Boolean))];
-  const images = new Map<string, FetchedImage>();
-  let next = 0;
-
-  async function worker(): Promise<void> {
-    while (next < uniqueUrls.length) {
-      const url = uniqueUrls[next++];
-      const image = await fetchImage(url);
-      if (image) images.set(url, image);
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(IMAGE_FETCH_CONCURRENCY, uniqueUrls.length) }, () =>
-      worker(),
-    ),
-  );
-  return images;
+function stableImageUrl(productId: number | string, fallbackUrl: string): string {
+  const base = publicBaseUrl();
+  if (!base) return fallbackUrl;
+  return `${base}/snapshots/images/${encodeURIComponent(String(productId))}`;
 }
 
-function addImageToCell(
-  wb: ExcelJS.Workbook,
-  ws: ExcelJS.Worksheet,
-  image: FetchedImage | undefined,
-  rowNumber: number,
-  columnNumber: number,
+function excelString(s: string): string {
+  return s.replace(/"/g, '""');
+}
+
+
+function setImageFormula(cell: ExcelJS.Cell, url: string | null | undefined): void {
+  if (!url) return;
+  cell.value = {
+    formula: `IMAGE("${excelString(url)}","Product image",1)`,
+    result: "View image",
+  };
+  cell.font = { ...LINK_FONT, bold: true };
+  cell.alignment = { horizontal: "center", vertical: "middle" };
+}
+
+function styleCountryCell(
+  cell: ExcelJS.Cell,
+  country: string,
+  colors: Map<string, string>,
 ): void {
-  if (!image) return;
-  const imageId = wb.addImage({ base64: image.base64, extension: image.extension });
-  ws.addImage(imageId, {
-    tl: { col: columnNumber - 1 + 0.1, row: rowNumber - 1 + 0.1 },
-    ext: { width: IMAGE_WIDTH, height: IMAGE_HEIGHT },
-    editAs: "oneCell",
-  });
-  ws.getRow(rowNumber).height = IMAGE_ROW_HEIGHT;
+  if (!country) return;
+  cell.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: colors.get(country) ?? generatedCountryColor(0) },
+  };
+  cell.font = { bold: true, color: { argb: "FF000000" } };
+  cell.alignment = { horizontal: "center" };
 }
 
 function addSectionRow(ws: ExcelJS.Worksheet, title: string): void {
@@ -202,7 +205,7 @@ export async function writeSnapshotFiles(
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("products");
-  const images = await fetchImagesByUrl(products.map((p) => p.image_url));
+  const countryColors = countryColorMap(products.map((p) => p.country));
 
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
@@ -238,7 +241,10 @@ export async function writeSnapshotFiles(
     });
     setHyperlink(row.getCell("image_url"), p.image_url);
     setHyperlink(row.getCell("product_link"), p.product_link);
-    addImageToCell(wb, ws, images.get(p.image_url), row.number, 9);
+    const imageUrl = stableImageUrl(p.product_id, p.image_url);
+    setImageFormula(row.getCell("image"), imageUrl);
+    styleCountryCell(row.getCell("country"), p.country, countryColors);
+    row.height = IMAGE_ROW_HEIGHT;
   }
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: "frozen", ySplit: 1 }];
@@ -377,7 +383,8 @@ export async function writeQuantitySoldFiles(
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("quantity_sold");
-  const images = await fetchImagesByUrl(rows.map((r) => r.image_url));
+  const countryColors = countryColorMap(rows.map((r) => r.country));
+
 
   ws.columns = [
     { header: "product_id", key: "product_id", width: 12 },
@@ -408,7 +415,10 @@ export async function writeQuantitySoldFiles(
       });
       setHyperlink(row.getCell("image_url"), r.image_url);
       setHyperlink(row.getCell("product_link"), r.product_link);
-      addImageToCell(wb, ws, images.get(r.image_url), row.number, 9);
+      const imageUrl = stableImageUrl(r.product_id, r.image_url);
+      setImageFormula(row.getCell("image"), imageUrl);
+      styleCountryCell(row.getCell("country"), r.country, countryColors);
+      row.height = IMAGE_ROW_HEIGHT;
     }
   }
 
