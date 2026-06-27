@@ -327,6 +327,7 @@ export interface QuantitySoldRow {
   product_id: number;
   name: string;
   country: string;
+  cost: string;
   quantity_yesterday: number;
   quantity_today: number;
   quantity_sold: QuantitySoldValue;
@@ -344,6 +345,7 @@ function qsRow(
     product_id: s.product_id,
     name: s.name,
     country: s.country,
+    cost: s.cost,
     quantity_yesterday: qy,
     quantity_today: qt,
     quantity_sold: sold,
@@ -454,6 +456,7 @@ export async function writeQuantitySoldFiles(
     { header: "product_id", key: "product_id", width: 12 },
     { header: "name", key: "name", width: 40 },
     { header: "country", key: "country", width: 10 },
+    { header: "cost", key: "cost", width: 10 },
     { header: "quantity_yesterday", key: "quantity_yesterday", width: 18 },
     { header: "quantity_today", key: "quantity_today", width: 16 },
     { header: "quantity_sold", key: "quantity_sold", width: 16 },
@@ -473,6 +476,7 @@ export async function writeQuantitySoldFiles(
         product_id: r.product_id,
         name: r.name,
         country: r.country,
+        cost: r.cost,
         quantity_yesterday: r.quantity_yesterday,
         quantity_today: r.quantity_today,
         quantity_sold: r.quantity_sold,
@@ -481,7 +485,7 @@ export async function writeQuantitySoldFiles(
       setHyperlink(row.getCell("product_link"), r.product_link);
       const imageUrl = stableImageUrl(r.product_id, r.image_url);
       setImagePlaceholder(row.getCell("image"), imageUrl);
-      addThumbnailToCell(wb, ws, thumbnails.get(r.image_url), row.number, 9);
+      addThumbnailToCell(wb, ws, thumbnails.get(r.image_url), row.number, 10);
       styleCountryCell(row.getCell("country"), r.country, countryColors);
       row.height = IMAGE_ROW_HEIGHT;
     }

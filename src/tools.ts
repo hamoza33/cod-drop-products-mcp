@@ -28,7 +28,7 @@ import {
   type DropProduct,
 } from "./marketplace.js";
 import { runSnapshot } from "./snapshot.js";
-import { productLink, stableImageUrl } from "./snapshot-files.js";
+import { productLink, stableImageUrl, snapshotsDir, listSnapshotFiles } from "./snapshot-files.js";
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                     */
@@ -257,6 +257,7 @@ function snapshotProductResponse(s: ProductSnapshot): Record<string, unknown> {
     project_name: s.project_name,
     image_url: s.image_url,
     image_preview_url: stableImageUrl(s.product_id, s.image_url),
+    image_file: stableImageUrl(s.product_id, s.image_url),
     product_link: productLink(s.product_id),
     snapshot_date: s.snapshot_date,
   };
@@ -603,7 +604,9 @@ const snapshotData = tool({
   name: "cod_drop_snapshot_data",
   description:
     "Retrieve stored product snapshot data for a specific date. " +
-    "Supports filtering and pagination. Useful to inspect what was captured on a given day.",
+    "Supports filtering and pagination. Returns all product info including cost, image files " +
+    "(both original URLs and stable proxy URLs), snapshot file download links (JSON/XLSX), " +
+    "and all other product details. Useful to inspect what was captured on a given day.",
   inputSchema: z.object({
     date: z
       .string()
@@ -666,12 +669,33 @@ const snapshotData = tool({
     const limit = input.limit ?? 50;
     const page = snaps.slice(offset, offset + limit);
 
+    // Build snapshot file URLs and image file URLs
+    const baseUrl = process.env.MCP_PUBLIC_URL
+      ? new URL(process.env.MCP_PUBLIC_URL).origin
+      : null;
+    const snapshotFiles = listSnapshotFiles()
+      .filter((f) => f.filename.includes(input.date))
+      .map((f) => ({
+        filename: f.filename,
+        size: f.size,
+        download_url: baseUrl ? `${baseUrl}/snapshots/${f.filename}` : f.filename,
+      }));
+
+    const imageFiles = page.map((s) => ({
+      product_id: s.product_id,
+      name: s.name,
+      image_url: s.image_url,
+      image_file: stableImageUrl(s.product_id, s.image_url),
+    }));
+
     return {
       date: input.date,
       total: snaps.length,
       returned: page.length,
       offset,
       limit,
+      snapshot_files: snapshotFiles,
+      image_files: imageFiles,
       products: page.map(snapshotProductResponse),
     };
   },
